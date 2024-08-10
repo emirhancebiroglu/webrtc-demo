@@ -7,7 +7,7 @@ const servers = {
   iceCandidatePoolSize: 10,
 };
 
-const baseUrl = "http://192.168.1.25:5217";
+const baseUrl = "https://135e-176-234-139-58.ngrok-free.app";
 
 // Global State
 const pc = new RTCPeerConnection(servers);
