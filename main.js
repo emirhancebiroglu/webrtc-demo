@@ -164,7 +164,7 @@ async function pollForAnswer(callId) {
         type: "answer",
       });
       await pc.setRemoteDescription(answerDescription);
-      break; // Stop polling once the answer is set
+      break;
     }
 
     await new Promise((resolve) => setTimeout(resolve, 1000)); // Poll every second
