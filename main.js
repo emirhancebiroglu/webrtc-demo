@@ -1,3 +1,5 @@
+import "./style.css";
+
 const servers = {
   iceServers: [
     {
@@ -7,7 +9,7 @@ const servers = {
   iceCandidatePoolSize: 10,
 };
 
-const baseUrl = "https://135e-176-234-139-58.ngrok-free.app";
+const baseUrl = "https://192.168.1.25:5217";
 
 // Global State
 const pc = new RTCPeerConnection(servers);
@@ -192,3 +194,4 @@ async function pollForIceCandidates(callId, type) {
     await new Promise((resolve) => setTimeout(resolve, 1000)); // Poll every second
   }
 }
+
