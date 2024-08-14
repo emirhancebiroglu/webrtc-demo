@@ -7,6 +7,11 @@
     <title>WebRTC Demo</title>
   </head>
   <body>
+    <div id="incomingCallNotification" style="display: none">
+      Incoming call...
+      <button id="answerButton">Answer</button>
+    </div>
+
     <h2>1. Start your Webcam</h2>
     <div class="videos">
       <span>
@@ -20,14 +25,7 @@
     </div>
 
     <button id="webcamButton">Start webcam</button>
-    <h2>2. Create a new Call</h2>
-    <button id="callButton" disabled>Create Call (offer)</button>
-
-    <h2>3. Join a Call</h2>
-    <p>Answer the call from a different browser window or device</p>
-
-    <input id="callInput" />
-    <button id="answerButton" disabled>Answer</button>
+    <button id="callButton" disabled>Create Call</button>
 
     <h2>4. Hangup</h2>
 

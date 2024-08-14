@@ -4,6 +4,7 @@
     "firebaseapp",
     "firestore",
     "mirsis",
+    "ondataavailable",
     "recordset",
     "uuidv",
     "webrtc",

@@ -1,4 +1,5 @@
 import "./style.css";
+import { v4 as uuidv4 } from "uuid";
 
 const servers = {
   iceServers: [
@@ -9,24 +10,28 @@ const servers = {
   iceCandidatePoolSize: 10,
 };
 
-const baseUrl = "https://192.168.1.25:5217";
-
 // Global State
 const pc = new RTCPeerConnection(servers);
 let localStream = null;
 let remoteStream = null;
+let socket = new WebSocket("wss://192.168.1.25:5217/wss");
+let offerTimeout = null;
+let localMediaRecorder = null;
+let remoteMediaRecorder = null;
+let callId = null;
 
 // HTML elements
 const webcamButton = document.getElementById("webcamButton");
 const webcamVideo = document.getElementById("webcamVideo");
 const callButton = document.getElementById("callButton");
-const callInput = document.getElementById("callInput");
 const answerButton = document.getElementById("answerButton");
 const remoteVideo = document.getElementById("remoteVideo");
 const hangupButton = document.getElementById("hangupButton");
+const incomingCallNotification = document.getElementById(
+  "incomingCallNotification"
+);
 
 // 1. Setup media sources
-
 webcamButton.onclick = async () => {
   localStream = await navigator.mediaDevices.getUserMedia({
     video: true,
@@ -57,141 +62,181 @@ webcamButton.onclick = async () => {
 
 // 2. Create an offer
 callButton.onclick = async () => {
-  const callId = generateUniqueCallId();
-  const saveCandidateUrl = `${baseUrl}/api/Call/SaveCandidate`;
+  if (!callId) {
+    callId = uuidv4();
+  }
 
-  // Get candidates for caller, save to db
-  pc.onicecandidate = async (event) => {
+  pc.onicecandidate = (event) => {
     if (event.candidate) {
-      const candidateData = {
-        CallId: callId,
-        Type: "Offer",
-        CandidateData: JSON.stringify(event.candidate),
-      };
-
-      await fetch(saveCandidateUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(candidateData),
-      });
+      socket.send(JSON.stringify({ candidate: event.candidate }));
     }
   };
 
-  // Create offer
   const offerDescription = await pc.createOffer();
   await pc.setLocalDescription(offerDescription);
 
-  const offer = {
-    CallId: callId,
-    OfferSdp: offerDescription.sdp,
-    AnswerSdp: null,
-  };
-
-  await fetch(`${baseUrl}/api/Call`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(offer),
-  });
-
-  callInput.value = callId;
-
+  socket.send(JSON.stringify({ offer: pc.localDescription }));
   hangupButton.disabled = false;
 
-  pollForAnswer(callId);
+  // Set a timeout to wait for the answer
+  offerTimeout = setTimeout(() => {
+    console.log("No answer received. Cancelling the offer.");
+    hangupButton.disabled = true;
+    callButton.disabled = false;
+    webcamButton.disabled = false;
+    pc.close();
+  }, 10000); // 10 seconds timeout
 };
 
-// 3. Answer the call with the unique ID
+// 3. Answer the call
 answerButton.onclick = async () => {
-  const callId = callInput.value;
-
-  // Fetch the call data from the server
-  const response = await fetch(`${baseUrl}/api/Call/${callId}`);
-  const callData = await response.json();
-
-  if (!callData || !callData.offerSdp) {
-    console.error("No offer found for this call ID.");
-    return;
+  if (offerTimeout) {
+    clearTimeout(offerTimeout);
   }
 
-  // Set the remote description using the offer SDP
-  const offerDescription = new RTCSessionDescription({
-    sdp: callData.offerSdp,
-    type: "offer",
-  });
-  await pc.setRemoteDescription(offerDescription);
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      socket.send(JSON.stringify({ candidate: event.candidate }));
+    }
+  };
 
   const answerDescription = await pc.createAnswer();
   await pc.setLocalDescription(answerDescription);
 
-  // Save the answer SDP to the server
-  const answer = {
-    CallId: callId,
-    AnswerSdp: answerDescription.sdp,
-  };
+  socket.send(JSON.stringify({ answer: pc.localDescription }));
 
-  await fetch(`${baseUrl}/api/Call/${callId}`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(answer),
-  });
+  incomingCallNotification.style.display = "none";
+  hangupButton.disabled = false;
+  answerButton.disabled = true;
 
-  // Poll for offer ICE candidates and add them to the peer connection
-  pollForIceCandidates(callId, "offer");
+  // Start recording both streams once the call is answered
+  startRecordingStreams();
 };
 
-function generateUniqueCallId() {
-  // Implement a function to generate a unique ID for the call
-  // This can be a GUID or another unique identifier
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
-    const r = (Math.random() * 16) | 0,
-      v = c == "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
+// 4. Handle incoming WebSocket messages
+socket.onmessage = async (message) => {
+  // Check if the incoming message is binary (Blob) or text (JSON)
+  if (typeof message.data === "string") {
+    // Handle JSON messages (offer/answer/candidates)
+    const data = JSON.parse(message.data);
 
-async function pollForAnswer(callId) {
-  while (!pc.currentRemoteDescription) {
-    const response = await fetch(`${baseUrl}/api/Call/${callId}`);
-    const data = await response.json();
-
-    if (data.answerSdp) {
-      const answerDescription = new RTCSessionDescription({
-        sdp: data.answerSdp,
-        type: "answer",
-      });
-      await pc.setRemoteDescription(answerDescription);
-      break;
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 1000)); // Poll every second
-  }
-}
-
-// Polling function for ICE candidates
-async function pollForIceCandidates(callId, type) {
-  const fetchedCandidates = new Set();
-
-  while (true) {
-    const response = await fetch(`${baseUrl}/api/Call/${callId}/${type}`);
-    const candidates = await response.json();
-
-    candidates.forEach((candidate) => {
-      if (!fetchedCandidates.has(candidate.id)) {
-        const iceCandidate = new RTCIceCandidate(
-          JSON.parse(candidate.candidateData)
-        );
-        pc.addIceCandidate(iceCandidate);
-        fetchedCandidates.add(candidate.id);
+    if (data.offer) {
+      await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+      incomingCallNotification.style.display = "block";
+      answerButton.disabled = false;
+    } else if (data.answer) {
+      if (offerTimeout) {
+        clearTimeout(offerTimeout);
       }
+      await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+    } else if (data.candidate) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+      } catch (e) {
+        console.error("Error adding received ice candidate", e);
+      }
+    }
+  }
+};
+
+socket.onopen = async () => {
+  console.log("Socket opened");
+};
+socket.onerror = async () => {
+  console.error("Socket error");
+};
+
+// 5. Hangup the call
+hangupButton.onclick = () => {
+  stopRecordingStreams();
+
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "hangup", callId: callId }));
+    socket.close();
+  }
+
+  pc.close();
+
+  hangupButton.disabled = true;
+  callButton.disabled = false;
+  answerButton.disabled = true;
+  webcamButton.disabled = false;
+  incomingCallNotification.style.display = "none";
+};
+
+function startRecordingStreams() {
+  if (localStream) {
+    const videoStream = new MediaStream(localStream.getVideoTracks());
+
+    localMediaRecorder = new MediaRecorder(videoStream, {
+      mimeType: "video/webm; codecs=vp9",
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 1000)); // Poll every second
+    localMediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const arrayBuffer = reader.result;
+          const base64String = arrayBufferToBase64(arrayBuffer);
+
+          const message = {
+            type: "callerVideo",
+            data: base64String,
+            callId: callId,
+          };
+
+          socket.send(JSON.stringify(message));
+        };
+        reader.readAsArrayBuffer(event.data);
+      }
+    };
+    localMediaRecorder.start(3000);
+  }
+
+  if (remoteStream) {
+    const videoStream = new MediaStream(remoteStream.getVideoTracks());
+
+    remoteMediaRecorder = new MediaRecorder(videoStream, {
+      mimeType: "video/webm; codecs=vp9",
+    });
+    remoteMediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const arrayBuffer = reader.result;
+          const base64String = arrayBufferToBase64(arrayBuffer);
+
+          const message = {
+            type: "calleeVideo",
+            data: base64String,
+            callId: callId,
+          };
+
+          socket.send(JSON.stringify(message));
+        };
+        reader.readAsArrayBuffer(event.data);
+      }
+    };
+    remoteMediaRecorder.start(3000);
   }
 }
 
+function arrayBufferToBase64(buffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return window.btoa(binary);
+}
+
+// Function to stop recording both local and remote streams
+function stopRecordingStreams() {
+  if (localMediaRecorder) {
+    localMediaRecorder.stop();
+  }
+  if (remoteMediaRecorder) {
+    remoteMediaRecorder.stop();
+  }
+}
