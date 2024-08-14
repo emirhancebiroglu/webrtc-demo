@@ -20,7 +20,6 @@ let localMediaRecorder = null;
 let remoteMediaRecorder = null;
 let callId = null;
 let candidateQueue = [];
-let messageQueue = [];
 
 // HTML elements
 const webcamVideo = document.getElementById("webcamVideo");
