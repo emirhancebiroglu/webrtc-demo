@@ -187,6 +187,15 @@ function startRecordingStreams() {
   }
 }
 
+function stopRecordingStreams() {
+  if (localMediaRecorder) {
+    localMediaRecorder.stop();
+  }
+  if (remoteMediaRecorder) {
+    remoteMediaRecorder.stop();
+  }
+}
+
 function sendMessage(message) {
   if (socket.readyState == WebSocket.OPEN) {
     socket.send(JSON.stringify(message));
@@ -204,14 +213,6 @@ function arrayBufferToBase64(buffer) {
 }
 
 // Function to stop recording both local and remote streams
-function stopRecordingStreams() {
-  if (localMediaRecorder) {
-    localMediaRecorder.stop();
-  }
-  if (remoteMediaRecorder) {
-    remoteMediaRecorder.stop();
-  }
-}
 
 function initiateWebSocket() {
   socket = new WebSocket("wss://192.168.1.25:5217/wss");
