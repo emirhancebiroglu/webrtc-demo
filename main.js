@@ -16,10 +16,14 @@ let localStream = null;
 let remoteStream = null;
 let socket;
 let offerTimeout = null;
+let answerTimeout = null;
 let localMediaRecorder = null;
 let remoteMediaRecorder = null;
-let callId = null;
+let localAudioRecorder = null;
+let remoteAudioRecorder = null;
+let callId;
 let candidateQueue = [];
+let messageQueue = [];
 
 // HTML elements
 const webcamVideo = document.getElementById("webcamVideo");
@@ -35,12 +39,11 @@ initiateWebSocket();
 
 // 2. Create an offer
 callButton.onclick = async () => {
+  callButton.disabled = true;
   await setMedia();
   webcamVideo.srcObject = localStream;
 
-  if (!callId) {
-    callId = uuidv4();
-  }
+  generateAndSendCallId();
 
   pc.onicecandidate = (event) => {
     if (event.candidate) {
@@ -57,9 +60,7 @@ callButton.onclick = async () => {
   // Set a timeout to wait for the answer
   offerTimeout = setTimeout(() => {
     console.log("No answer received. Cancelling the offer.");
-    hangupButton.disabled = true;
-    callButton.disabled = false;
-    pc.close();
+    resetPeers();
   }, 10000); // 10 seconds timeout
 };
 
@@ -67,6 +68,10 @@ callButton.onclick = async () => {
 answerButton.onclick = async () => {
   if (offerTimeout) {
     clearTimeout(offerTimeout);
+  }
+
+  if (answerTimeout) {
+    clearTimeout(answerTimeout);
   }
 
   pc.onicecandidate = (event) => {
@@ -94,22 +99,35 @@ answerButton.onclick = async () => {
   remoteVideo.srcObject = remoteStream;
 
   // Start recording both streams once the call is answered
-  startRecordingStreams();
+  startRecordingVideoStreams();
+  startRecordingAudioStreams();
 };
 
 // 5. Hangup the call
 hangupButton.onclick = () => {
   if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "hangup", callId: callId }));
+    socket.send(JSON.stringify({ type: "hangup" }));
   }
 
-  resetSocketsAndPeers();
+  resetPeers();
 
   if (socket) {
     socket.close();
   }
-  initiateWebSocket();
 };
+
+function generateAndSendCallId() {
+  if (callId == undefined) {
+    callId = uuidv4();
+  }
+
+  const id = {
+    type: "callId",
+    callId: callId,
+  };
+
+  socket.send(JSON.stringify(id));
+}
 
 async function setMedia() {
   localStream = await navigator.mediaDevices.getUserMedia({
@@ -131,12 +149,10 @@ async function setMedia() {
   };
 
   webcamVideo.muted = true;
-
-  callButton.disabled = false;
   answerButton.disabled = false;
 }
 
-function startRecordingStreams() {
+function startRecordingVideoStreams() {
   if (localStream && localStream.getTracks().length > 0) {
     const videoStream = new MediaStream(localStream.getVideoTracks());
 
@@ -154,7 +170,7 @@ function startRecordingStreams() {
           const message = {
             type: "callerVideo",
             data: base64String,
-            callId: callId,
+            id: callId,
           };
 
           sendMessage(message);
@@ -181,7 +197,7 @@ function startRecordingStreams() {
           const message = {
             type: "calleeVideo",
             data: base64String,
-            callId: callId,
+            id: callId,
           };
 
           sendMessage(message);
@@ -193,7 +209,64 @@ function startRecordingStreams() {
   }
 }
 
-function stopRecordingStreams() {
+function startRecordingAudioStreams() {
+  if (localStream && localStream.getTracks().length > 0) {
+    const audioStream = new MediaStream(localStream.getAudioTracks());
+
+    localAudioRecorder = new MediaRecorder(audioStream, {
+      mimeType: "audio/webm; codecs=opus",
+    });
+
+    localAudioRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const arrayBuffer = reader.result;
+          const base64String = arrayBufferToBase64(arrayBuffer);
+
+          const message = {
+            type: "callerAudio",
+            data: base64String,
+            id: callId,
+          };
+
+          sendMessage(message);
+        };
+        reader.readAsArrayBuffer(event.data);
+      }
+    };
+    localAudioRecorder.start(3000);
+  }
+
+  if (remoteStream && remoteStream.getTracks().length > 0) {
+    const audioStream = new MediaStream(remoteStream.getAudioTracks());
+
+    remoteAudioRecorder = new MediaRecorder(audioStream, {
+      mimeType: "audio/webm; codecs=opus",
+    });
+    remoteAudioRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const arrayBuffer = reader.result;
+          const base64String = arrayBufferToBase64(arrayBuffer);
+
+          const message = {
+            type: "calleeAudio",
+            data: base64String,
+            id: callId,
+          };
+
+          sendMessage(message);
+        };
+        reader.readAsArrayBuffer(event.data);
+      }
+    };
+    remoteAudioRecorder.start(3000);
+  }
+}
+
+function stopRecordingVideoStreams() {
   if (localMediaRecorder) {
     localMediaRecorder.stop();
   }
@@ -202,9 +275,20 @@ function stopRecordingStreams() {
   }
 }
 
+function stopRecordingAudioStreams() {
+  if (localAudioRecorder) {
+    localAudioRecorder.stop();
+  }
+  if (remoteMediaRecorder) {
+    remoteAudioRecorder.stop();
+  }
+}
+
 function sendMessage(message) {
   if (socket.readyState == WebSocket.OPEN) {
     socket.send(JSON.stringify(message));
+  } else {
+    messageQueue.push(message);
   }
 }
 
@@ -218,20 +302,27 @@ function arrayBufferToBase64(buffer) {
   return window.btoa(binary);
 }
 
-// Function to stop recording both local and remote streams
-
 function initiateWebSocket() {
   socket = new WebSocket("wss://192.168.1.25:5217/wss");
 
   socket.onopen = async () => {
-    console.log("Socket opened");
+    if (messageQueue.length > 0) {
+      callButton.disabled = true;
+      messageQueue.forEach((message) => {
+        sendMessage(message);
+      });
+      messageQueue = [];
+    }
+
+    callButton.disabled = false;
+    callId = undefined;
   };
-  socket.onerror = async () => {
-    console.error("Socket error");
+
+  socket.onclose = async () => {
+    initiateWebSocket();
   };
 
   socket.onmessage = async (message) => {
-    // Check if the incoming message is binary (Blob) or text (JSON)
     if (typeof message.data === "string") {
       // Handle JSON messages (offer/answer/candidates)
       const data = JSON.parse(message.data);
@@ -241,6 +332,13 @@ function initiateWebSocket() {
         await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
         incomingCallNotification.style.display = "block";
         answerButton.disabled = false;
+
+        // Set a timeout to hide the incoming call notification if not answered
+        answerTimeout = setTimeout(() => {
+          console.log("No answer from callee. Hiding the notification.");
+          incomingCallNotification.style.display = "none";
+          resetPeers();
+        }, 10000); // 10 seconds timeout
       } else if (data.answer) {
         remoteVideo.srcObject = remoteStream;
         if (offerTimeout) {
@@ -256,19 +354,21 @@ function initiateWebSocket() {
           candidateQueue.push(candidate);
         }
       } else if (data.type === "hangup") {
-        resetSocketsAndPeers();
+        resetPeers();
 
         if (socket) {
           socket.close();
         }
-        initiateWebSocket();
+      } else if (data.type === "callId") {
+        callId = data.callId;
       }
     }
   };
 }
 
-function resetSocketsAndPeers() {
-  stopRecordingStreams();
+function resetPeers() {
+  stopRecordingVideoStreams();
+  stopRecordingAudioStreams();
 
   if (localStream) {
     localStream.getTracks().forEach((track) => track.stop());
