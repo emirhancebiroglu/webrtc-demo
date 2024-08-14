@@ -11,17 +11,18 @@ const servers = {
 };
 
 // Global State
-const pc = new RTCPeerConnection(servers);
+let pc = new RTCPeerConnection(servers);
 let localStream = null;
 let remoteStream = null;
-let socket = new WebSocket("wss://192.168.1.25:5217/wss");
+let socket;
 let offerTimeout = null;
 let localMediaRecorder = null;
 let remoteMediaRecorder = null;
 let callId = null;
+let candidateQueue = [];
+let messageQueue = [];
 
 // HTML elements
-const webcamButton = document.getElementById("webcamButton");
 const webcamVideo = document.getElementById("webcamVideo");
 const callButton = document.getElementById("callButton");
 const answerButton = document.getElementById("answerButton");
@@ -31,37 +32,13 @@ const incomingCallNotification = document.getElementById(
   "incomingCallNotification"
 );
 
-// 1. Setup media sources
-webcamButton.onclick = async () => {
-  localStream = await navigator.mediaDevices.getUserMedia({
-    video: true,
-    audio: true,
-  });
-  remoteStream = new MediaStream();
-
-  // Push tracks from local stream to peer connection
-  localStream.getTracks().forEach((track) => {
-    pc.addTrack(track, localStream);
-  });
-
-  // Pull tracks from remote stream, add to video stream
-  pc.ontrack = (event) => {
-    event.streams[0].getTracks().forEach((track) => {
-      remoteStream.addTrack(track);
-    });
-  };
-
-  webcamVideo.srcObject = localStream;
-  webcamVideo.muted = true;
-  remoteVideo.srcObject = remoteStream;
-
-  callButton.disabled = false;
-  answerButton.disabled = false;
-  webcamButton.disabled = true;
-};
+initiateWebSocket();
 
 // 2. Create an offer
 callButton.onclick = async () => {
+  await setMedia();
+  webcamVideo.srcObject = localStream;
+
   if (!callId) {
     callId = uuidv4();
   }
@@ -83,7 +60,6 @@ callButton.onclick = async () => {
     console.log("No answer received. Cancelling the offer.");
     hangupButton.disabled = true;
     callButton.disabled = false;
-    webcamButton.disabled = false;
     pc.close();
   }, 10000); // 10 seconds timeout
 };
@@ -105,67 +81,58 @@ answerButton.onclick = async () => {
 
   socket.send(JSON.stringify({ answer: pc.localDescription }));
 
+  candidateQueue.forEach(async (candidate) => {
+    await pc.addIceCandidate(candidate);
+  });
+
+  candidateQueue = [];
+
   incomingCallNotification.style.display = "none";
   hangupButton.disabled = false;
   answerButton.disabled = true;
+
+  webcamVideo.srcObject = localStream;
+  remoteVideo.srcObject = remoteStream;
 
   // Start recording both streams once the call is answered
   startRecordingStreams();
 };
 
-// 4. Handle incoming WebSocket messages
-socket.onmessage = async (message) => {
-  // Check if the incoming message is binary (Blob) or text (JSON)
-  if (typeof message.data === "string") {
-    // Handle JSON messages (offer/answer/candidates)
-    const data = JSON.parse(message.data);
-
-    if (data.offer) {
-      await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-      incomingCallNotification.style.display = "block";
-      answerButton.disabled = false;
-    } else if (data.answer) {
-      if (offerTimeout) {
-        clearTimeout(offerTimeout);
-      }
-      await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-    } else if (data.candidate) {
-      try {
-        await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-      } catch (e) {
-        console.error("Error adding received ice candidate", e);
-      }
-    }
-  }
-};
-
-socket.onopen = async () => {
-  console.log("Socket opened");
-};
-socket.onerror = async () => {
-  console.error("Socket error");
-};
-
 // 5. Hangup the call
 hangupButton.onclick = () => {
-  stopRecordingStreams();
-
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "hangup", callId: callId }));
-    socket.close();
   }
-
-  pc.close();
-
-  hangupButton.disabled = true;
-  callButton.disabled = false;
-  answerButton.disabled = true;
-  webcamButton.disabled = false;
-  incomingCallNotification.style.display = "none";
+  resetSocketsAndPeers();
 };
 
+async function setMedia() {
+  localStream = await navigator.mediaDevices.getUserMedia({
+    video: true,
+    audio: true,
+  });
+  remoteStream = new MediaStream();
+
+  // Push tracks from local stream to peer connection
+  localStream.getTracks().forEach((track) => {
+    pc.addTrack(track, localStream);
+  });
+
+  // Pull tracks from remote stream, add to video stream
+  pc.ontrack = (event) => {
+    event.streams[0].getTracks().forEach((track) => {
+      remoteStream.addTrack(track);
+    });
+  };
+
+  webcamVideo.muted = true;
+
+  callButton.disabled = false;
+  answerButton.disabled = false;
+}
+
 function startRecordingStreams() {
-  if (localStream) {
+  if (localStream && localStream.getTracks().length > 0) {
     const videoStream = new MediaStream(localStream.getVideoTracks());
 
     localMediaRecorder = new MediaRecorder(videoStream, {
@@ -185,7 +152,7 @@ function startRecordingStreams() {
             callId: callId,
           };
 
-          socket.send(JSON.stringify(message));
+          sendMessage(message);
         };
         reader.readAsArrayBuffer(event.data);
       }
@@ -193,7 +160,7 @@ function startRecordingStreams() {
     localMediaRecorder.start(3000);
   }
 
-  if (remoteStream) {
+  if (remoteStream && remoteStream.getTracks().length > 0) {
     const videoStream = new MediaStream(remoteStream.getVideoTracks());
 
     remoteMediaRecorder = new MediaRecorder(videoStream, {
@@ -212,12 +179,18 @@ function startRecordingStreams() {
             callId: callId,
           };
 
-          socket.send(JSON.stringify(message));
+          sendMessage(message);
         };
         reader.readAsArrayBuffer(event.data);
       }
     };
     remoteMediaRecorder.start(3000);
+  }
+}
+
+function sendMessage(message) {
+  if (socket.readyState == WebSocket.OPEN) {
+    socket.send(JSON.stringify(message));
   }
 }
 
@@ -239,4 +212,75 @@ function stopRecordingStreams() {
   if (remoteMediaRecorder) {
     remoteMediaRecorder.stop();
   }
+}
+
+function initiateWebSocket() {
+  socket = new WebSocket("wss://192.168.1.25:5217/wss");
+
+  socket.onopen = async () => {
+    console.log("Socket opened");
+  };
+  socket.onerror = async () => {
+    console.error("Socket error");
+  };
+
+  socket.onmessage = async (message) => {
+    // Check if the incoming message is binary (Blob) or text (JSON)
+    if (typeof message.data === "string") {
+      // Handle JSON messages (offer/answer/candidates)
+      const data = JSON.parse(message.data);
+
+      if (data.offer) {
+        await setMedia();
+        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+        incomingCallNotification.style.display = "block";
+        answerButton.disabled = false;
+      } else if (data.answer) {
+        remoteVideo.srcObject = remoteStream;
+        if (offerTimeout) {
+          clearTimeout(offerTimeout);
+        }
+        await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+      } else if (data.candidate) {
+        const candidate = new RTCIceCandidate(data.candidate);
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(candidate);
+        } else {
+          // Queue the candidate if remote description is not set
+          candidateQueue.push(candidate);
+        }
+      } else if (data.type === "hangup") {
+        if (socket) {
+          resetSocketsAndPeers();
+        }
+      }
+    }
+  };
+}
+
+function resetSocketsAndPeers() {
+  stopRecordingStreams();
+
+  if (localStream) {
+    localStream.getTracks().forEach((track) => track.stop());
+  }
+  if (remoteStream) {
+    remoteStream.getTracks().forEach((track) => track.stop());
+  }
+
+  if (pc) {
+    pc.close();
+  }
+
+  webcamVideo.srcObject = null;
+  remoteVideo.srcObject = null;
+
+  localStream = null;
+  remoteStream = null;
+
+  pc = new RTCPeerConnection(servers);
+  initiateWebSocket();
+
+  hangupButton.disabled = true;
+  callButton.disabled = false;
 }
