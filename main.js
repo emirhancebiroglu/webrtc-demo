@@ -102,7 +102,13 @@ hangupButton.onclick = () => {
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "hangup", callId: callId }));
   }
+
   resetSocketsAndPeers();
+
+  if (socket) {
+    socket.close();
+  }
+  initiateWebSocket();
 };
 
 async function setMedia() {
@@ -250,9 +256,12 @@ function initiateWebSocket() {
           candidateQueue.push(candidate);
         }
       } else if (data.type === "hangup") {
+        resetSocketsAndPeers();
+
         if (socket) {
-          resetSocketsAndPeers();
+          socket.close();
         }
+        initiateWebSocket();
       }
     }
   };
@@ -279,7 +288,6 @@ function resetSocketsAndPeers() {
   remoteStream = null;
 
   pc = new RTCPeerConnection(servers);
-  initiateWebSocket();
 
   hangupButton.disabled = true;
   callButton.disabled = false;
