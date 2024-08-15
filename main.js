@@ -106,7 +106,7 @@ answerButton.onclick = async () => {
 // 5. Hangup the call
 hangupButton.onclick = () => {
   if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "hangup" }));
+    socket.send(JSON.stringify({ type: "hangup", callId: callId }));
   }
 
   resetPeers();
@@ -117,9 +117,7 @@ hangupButton.onclick = () => {
 };
 
 function generateAndSendCallId() {
-  if (callId == undefined) {
-    callId = uuidv4();
-  }
+  callId = uuidv4();
 
   const id = {
     type: "callId",
@@ -306,7 +304,9 @@ function initiateWebSocket() {
   socket = new WebSocket("wss://192.168.1.25:5217/wss");
 
   socket.onopen = async () => {
+    console.log("socket opened");
     if (messageQueue.length > 0) {
+      console.log("Sending queued messages...");
       callButton.disabled = true;
       messageQueue.forEach((message) => {
         sendMessage(message);
@@ -315,10 +315,10 @@ function initiateWebSocket() {
     }
 
     callButton.disabled = false;
-    callId = undefined;
   };
 
   socket.onclose = async () => {
+    console.log("socket closed");
     initiateWebSocket();
   };
 
