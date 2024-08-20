@@ -37,13 +37,13 @@ const incomingCallNotification = document.getElementById(
 
 initiateWebSocket();
 
-// 2. Create an offer
+// Create the call
 callButton.onclick = async () => {
-  callButton.disabled = true;
-  await setMedia();
-  webcamVideo.srcObject = localStream;
-
+  await setLocalMedia();
+  await setRemoteMedia();
   generateAndSendCallId();
+
+  callButton.disabled = true;
 
   pc.onicecandidate = (event) => {
     if (event.candidate) {
@@ -64,8 +64,10 @@ callButton.onclick = async () => {
   }, 10000); // 10 seconds timeout
 };
 
-// 3. Answer the call
+// Answer the call
 answerButton.onclick = async () => {
+  await setLocalMedia();
+
   if (offerTimeout) {
     clearTimeout(offerTimeout);
   }
@@ -95,15 +97,12 @@ answerButton.onclick = async () => {
   hangupButton.disabled = false;
   answerButton.disabled = true;
 
-  webcamVideo.srcObject = localStream;
-  remoteVideo.srcObject = remoteStream;
-
   // Start recording both streams once the call is answered
   startRecordingVideoStreams();
   startRecordingAudioStreams();
 };
 
-// 5. Hangup the call
+// Hangup the call
 hangupButton.onclick = () => {
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "hangup", callId: callId }));
@@ -127,26 +126,32 @@ function generateAndSendCallId() {
   socket.send(JSON.stringify(id));
 }
 
-async function setMedia() {
+async function setLocalMedia() {
   localStream = await navigator.mediaDevices.getUserMedia({
     video: true,
     audio: true,
   });
-  remoteStream = new MediaStream();
+  webcamVideo.srcObject = localStream;
+  webcamVideo.muted = true;
 
   // Push tracks from local stream to peer connection
   localStream.getTracks().forEach((track) => {
     pc.addTrack(track, localStream);
   });
+}
+
+async function setRemoteMedia() {
+  remoteStream = new MediaStream();
 
   // Pull tracks from remote stream, add to video stream
   pc.ontrack = (event) => {
     event.streams[0].getTracks().forEach((track) => {
       remoteStream.addTrack(track);
     });
+    console.log("remote stream : " + remoteStream);
+    remoteVideo.srcObject = remoteStream;
   };
 
-  webcamVideo.muted = true;
   answerButton.disabled = false;
 }
 
@@ -328,7 +333,7 @@ function initiateWebSocket() {
       const data = JSON.parse(message.data);
 
       if (data.offer) {
-        await setMedia();
+        await setRemoteMedia();
         await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
         incomingCallNotification.style.display = "block";
         answerButton.disabled = false;
@@ -340,7 +345,6 @@ function initiateWebSocket() {
           resetPeers();
         }, 10000); // 10 seconds timeout
       } else if (data.answer) {
-        remoteVideo.srcObject = remoteStream;
         if (offerTimeout) {
           clearTimeout(offerTimeout);
         }
