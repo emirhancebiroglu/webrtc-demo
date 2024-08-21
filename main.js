@@ -171,7 +171,7 @@ function startRecordingVideoStreams() {
           const base64String = arrayBufferToBase64(arrayBuffer);
 
           const message = {
-            type: "callerVideo",
+            type: "calleeVideo",
             data: base64String,
             id: callId,
           };
@@ -198,7 +198,7 @@ function startRecordingVideoStreams() {
           const base64String = arrayBufferToBase64(arrayBuffer);
 
           const message = {
-            type: "calleeVideo",
+            type: "callerVideo",
             data: base64String,
             id: callId,
           };
@@ -228,7 +228,7 @@ function startRecordingAudioStreams() {
           const base64String = arrayBufferToBase64(arrayBuffer);
 
           const message = {
-            type: "callerAudio",
+            type: "calleeAudio",
             data: base64String,
             id: callId,
           };
@@ -255,7 +255,7 @@ function startRecordingAudioStreams() {
           const base64String = arrayBufferToBase64(arrayBuffer);
 
           const message = {
-            type: "calleeAudio",
+            type: "callerAudio",
             data: base64String,
             id: callId,
           };
