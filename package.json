@@ -13,7 +13,7 @@
   "dependencies": {
     "mssql": "^11.0.1",
     "uuid": "^10.0.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.1"
   },
   "main": "main.js",
   "keywords": [],
